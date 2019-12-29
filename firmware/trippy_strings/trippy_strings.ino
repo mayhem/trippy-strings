@@ -1,3 +1,4 @@
+#include <Encoder.h>
 #include <arduino.h>
 #include "monster.h"
 
@@ -15,10 +16,14 @@ void setup()
     motor_off(1);
 
     on_target0 = millis() + 100;
+    //motor_on(0, CW, 64);    
+    //motor_on(1, CCW, 64);
 }
 
 void loop() 
 {
+    //return;
+    
     if (off_target0 && millis() >= off_target0)
     {
         off_target0 = 0;
@@ -35,7 +40,7 @@ void loop()
         motor_on(0, curr_dir, curr_speed);
         motor_on(1, curr_dir, curr_speed);
         on_target0 = 0;
-        off_target0 = millis() + 2500;
+        off_target0 = millis() + 1500;
         Serial.println("motor on");
     }
 
