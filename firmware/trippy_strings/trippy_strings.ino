@@ -2,48 +2,58 @@
 #include <arduino.h>
 #include "monster.h"
 
-uint32_t off_target0 = 0;
-uint32_t on_target0 = 0;
-uint8_t  curr_dir = CW;
-uint8_t  curr_speed = 0;
-
 void setup() 
 {
-    Serial.begin(9600);
-
+    Serial.begin(115200);
     motor_setup();
     motor_off(0); 
     motor_off(1);
-
-    on_target0 = millis() + 100;
-    //motor_on(0, CW, 64);    
-    //motor_on(1, CCW, 64);
 }
 
 void loop() 
 {
-    //return;
+    char ch;
+    int  d;
     
-    if (off_target0 && millis() >= off_target0)
+    if (Serial.available() > 0) 
     {
-        off_target0 = 0;
-        motor_off(0);
-        motor_off(1);
-        Serial.println("motor off");
+        ch = Serial.read();
+        if (ch == 10)
+        {
+            int8_t motor;
+            int16_t speed;
 
-        on_target0 = millis + 250;
-    }
-    if (on_target0 && millis() >= on_target0)
-    {
-        curr_dir = (curr_dir == CW) ? CCW : CW;
-        curr_speed = 64;
-        motor_on(0, curr_dir, curr_speed);
-        motor_on(1, curr_dir, curr_speed);
-        on_target0 = 0;
-        off_target0 = millis() + 1500;
-        Serial.println("motor on");
-    }
+            motor = buf[0] - '0';
+            speed = atoi(buf + 1);
+            if (speed < -255 || speed > 255 or motor < 0 or motor > 1)
+                Serial.println("?");
+            else
+            {
+                if (speed < 0)
+                    dir = CCW
+                else
+                    dir = CW
 
-    Serial.println(read_current_sense(0));
-    delay(100);
+                if (speed == 0)
+                    motor_off(motor)
+                else
+                    motor_on(motor, dir, (uint8_t)abs(speed));
+
+                Serial.print(motor);
+                Serial.print(" ");
+                Serial.print(dir);
+                Serial.print(" ");
+                Serial.println(abs(speed));
+            }
+            buf[0] = 0;
+            buf_index = 0;
+        }
+        else
+        {
+            buf[buf_index] = ch;
+            buf_index++;
+            buf[buf_index] = 0;
+        }
+    }
 }
+
