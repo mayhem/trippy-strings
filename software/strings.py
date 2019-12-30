@@ -3,6 +3,7 @@
 from time import sleep, time
 from threading import Thread
 import pigpio
+import serial
 from encoder import decoder
 
 BUTTON_0 = 17
@@ -12,7 +13,39 @@ HALL_1_1 = 22
 HALL_2_0 = 23
 HALL_2_1 = 24
 
+DEVICE = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Uno_64932343938351313012-if00"
 WINDOW_SIZE = 5
+DEBOUNCE_TIME = .01
+
+STATE_SETUP = 1
+STATE_SETUP_B0 = 2
+STATE_SETUP_B1 = 3
+STATE_RUNNING = 4
+STATE_RUNNING_B0 = 5
+STATE_RUNNING_B1 = 6
+
+EVENT_B0_HI= 0
+EVENT_B0_LOW = 1
+EVENT_B1_HI= 2
+EVENT_B1_LOW = 3
+
+transition_table = (
+    (STATE_SETUP, EVENT_B0_HI, STATE_SETUP_B0),  
+    (STATE_SETUP, EVENT_B1_HI, STATE_SETUP_B1),  
+
+    (STATE_SETUP_B0, EVENT_B1_HI, STATE_RUNNING),
+    (STATE_SETUP_B0, EVENT_B0_LOW, STATE_SETUP),
+    (STATE_SETUP_B1, EVENT_B0_HI, STATE_RUNNING),
+    (STATE_SETUP_B1, EVENT_B1_LOW, STATE_SETUP),
+
+    (STATE_RUNNING, EVENT_B0_HI, STATE_RUNNING_B0),  
+    (STATE_RUNNING, EVENT_B1_HI, STATE_RUNNING_B1),  
+
+    (STATE_RUNNING_B0, EVENT_B1_HI, STATE_SETUP),
+    (STATE_RUNNING_B0, EVENT_B0_LOW, STATE_RUNNING),
+    (STATE_RUNNING_B1, EVENT_B0_HI, STATE_SETUP),
+    (STATE_RUNNING_B1, EVENT_B1_LOW, STATE_RUNNING),
+)
 
 ts = None
 def callback_0(way):
@@ -20,6 +53,9 @@ def callback_0(way):
 
 def callback_1(way):
     ts.callback_1(way)
+
+def pig_callback(GPIO, level, tick):
+    ts.pig_callback(GPIO, level, tick)
 
 
 class TrippyStrings(Thread):
@@ -32,9 +68,52 @@ class TrippyStrings(Thread):
         self.encoder_1 = decoder(self.pi, HALL_2_0, HALL_2_1, callback_1)
         self.stop_thread = False
         self.button_0_state = False
+        self.button_0_change = 0
         self.button_1_state = False
+        self.button_1_change = 0
         self.pos_0 = 0
         self.pos_1 = 0
+        self.current_state = STATE_SETUP
+
+
+    def setup(self):
+        if not self.pi.connected:
+           sys.exit(-1)
+
+        self.pi.callback(BUTTON_0, pigpio.EITHER_EDGE, pig_callback)
+        self.pi.callback(BUTTON_1, pigpio.EITHER_EDGE, pig_callback)
+
+        try:
+            self.ser = serial.Serial(DEVICE,
+                9600,
+                bytesize=serial.EIGHTBITS,
+                parity=serial.PARITY_NONE,
+                stopbits=serial.STOPBITS_ONE,
+                timeout=.01)
+        except serial.serialutil.SerialException as err:
+            print("Failed to open serial port %s" % device, str(err))
+            sys.exit(-1)
+
+        sleep(1)
+        self.start()
+
+
+    def pig_callback(self, gpio, level, tick):
+        if gpio == BUTTON_0 and level:
+            self.button_0_change = time()
+            self.button_0_state = True
+
+        if gpio == BUTTON_0 and not level:
+            self.button_0_change = time()
+            self.button_0_state = False
+
+        if gpio == BUTTON_1 and level:
+            self.button_1_change = time()
+            self.button_1_state = True
+
+        if gpio == BUTTON_1 and not level:
+            self.button_1_change = time()
+            self.button_1_state = False
 
 
     def stop(self):
@@ -49,41 +128,80 @@ class TrippyStrings(Thread):
         self.pos_1 += way
 
 
+    def motor_speed(self, motor, speed):
+        if motor != 0 and motor != 1 and (speed < -255 or speed > 255):
+            return
+
+        # Take into account that one motor is upside down from the other
+        if motor == 1:
+            speed = -speed
+
+        if self.ser:
+            self.ser.write(bytes("%d%d\r\n" % (motor, speed), encoding="ascii"))
+            
+
+    def event_action(self, new_state, event):
+        if new_state == STATE_RUNNING:
+            self.pos_0 = 0
+            self.pos_1 = 0
+            self.motor_speed(0, 64)
+            self.motor_speed(1, 64)
+        elif new_state == STATE_SETUP:
+            self.motor_speed(0, 0)
+            self.motor_speed(1, 0)
+        elif new_state == STATE_SETUP_B0:
+            self.motor_speed(0, 64)
+        elif new_state == STATE_SETUP_B1:
+            self.motor_speed(1, 64)
+
+
+    def handle_event(self, event):
+        for row in transition_table:
+            if row[0] == self.current_state and row[1] == event:
+                self.event_action(row[2], event)
+                self.current_state = row[2]
+#        else:
+#            print("warning event not in transition table. current_state: %d event: %d" % (self.current_state, event))
+                
+
     def run(self):
+
         while not self.stop_thread:
-#            val = GPIO.input(HALL_2_0)
-#            if self.hall_2_state != val:
-#                self.hall_2_state = val
-#                self.motor_1_ticks.insert(0, time())
-#
-#            val = GPIO.input(HALL_2_1)
-#            if self.hall_3_state != val:
-#                self.hall_3_state = val
-#                self.motor_1_ticks.insert(0, time())
-#
+
+            if not self.button_0_state and self.button_0_change and (time() - self.button_0_change > DEBOUNCE_TIME):
+                self.handle_event(EVENT_B0_HI)
+                self.button_0_change = 0
+                self.button_0_state = 1
+
+            if not self.button_1_state and self.button_1_change and (time() - self.button_1_change > DEBOUNCE_TIME):
+                self.handle_event(EVENT_B1_HI)
+                self.button_1_change = 0
+                self.button_1_state = 1
+
+            if self.button_0_state and self.button_0_change and (time() - self.button_0_change > DEBOUNCE_TIME):
+                self.handle_event(EVENT_B0_LOW)
+                self.button_0_change = 0
+                self.button_0_state = 0
+
+            if self.button_1_state and self.button_1_change and (time() - self.button_1_change > DEBOUNCE_TIME):
+                self.handle_event(EVENT_B1_LOW)
+                self.button_1_change = 0
+                self.button_1_state = 0
+
             sleep(.001)
 
-
-
-
-def setup():
-
-#    GPIO.setup(BUTTON_0, GPIO.IN)
-#    GPIO.setup(BUTTON_1, GPIO.IN)
-    pass
+        self.motor_speed(0, 0)
+        self.motor_speed(1, 0)
 
 
 def main():
     global ts
 
-    setup()
-
     ts = TrippyStrings()
-    ts.start()
+    ts.setup()
 
     try:
         while True:
-            print("%04d %04d" % (ts.pos_0, ts.pos_1))
             sleep(.1)
     except KeyboardInterrupt:
         ts.stop()
