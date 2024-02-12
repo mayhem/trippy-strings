@@ -1,5 +1,6 @@
 #!/usr/bin/python3
 
+from math import sin
 from time import sleep, time
 from threading import Thread
 import pigpio
@@ -18,6 +19,7 @@ DEVICE = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Uno_64932343938
 WINDOW_SIZE = 5
 DEBOUNCE_TIME = .01
 SAMPLE_TIME = .075
+SET_POINT_ADJUST_INCREMENT = 25
 
 STATE_SETUP = 1
 STATE_SETUP_B0 = 2
@@ -32,20 +34,41 @@ EVENT_B1_HI= 2
 EVENT_B1_LOW = 3
 
 transition_table = (
+
+    # state 1
     (STATE_SETUP, EVENT_B0_HI, STATE_SETUP_B0),  
     (STATE_SETUP, EVENT_B1_HI, STATE_SETUP_B1),  
+    (STATE_SETUP, EVENT_B0_LOW, STATE_SETUP),
+    (STATE_SETUP, EVENT_B1_LOW, STATE_SETUP),
 
+    # state 2
+    (STATE_SETUP_B0, EVENT_B0_HI, STATE_SETUP_B0),
     (STATE_SETUP_B0, EVENT_B1_HI, STATE_RUNNING),
     (STATE_SETUP_B0, EVENT_B0_LOW, STATE_SETUP),
+    (STATE_SETUP_B0, EVENT_B1_LOW, STATE_SETUP_B0),
+
+    # state 3
+    (STATE_SETUP_B1, EVENT_B1_HI, STATE_SETUP_B1),
     (STATE_SETUP_B1, EVENT_B0_HI, STATE_RUNNING),
     (STATE_SETUP_B1, EVENT_B1_LOW, STATE_SETUP),
+    (STATE_SETUP_B1, EVENT_B0_LOW, STATE_SETUP_B1),
 
+    # state 4
     (STATE_RUNNING, EVENT_B0_HI, STATE_RUNNING_B0),  
     (STATE_RUNNING, EVENT_B1_HI, STATE_RUNNING_B1),  
+    (STATE_RUNNING, EVENT_B0_LOW, STATE_RUNNING),  
+    (STATE_RUNNING, EVENT_B1_LOW, STATE_RUNNING),  
 
+    # state 5
     (STATE_RUNNING_B0, EVENT_B1_HI, STATE_SETUP),
+    (STATE_RUNNING_B0, EVENT_B0_HI, STATE_RUNNING_B0),
+    (STATE_RUNNING_B0, EVENT_B1_LOW, STATE_RUNNING_B0),
     (STATE_RUNNING_B0, EVENT_B0_LOW, STATE_RUNNING),
+
+    # state 6
     (STATE_RUNNING_B1, EVENT_B0_HI, STATE_SETUP),
+    (STATE_RUNNING_B1, EVENT_B1_HI, STATE_RUNNING_B1),
+    (STATE_RUNNING_B1, EVENT_B0_LOW, STATE_RUNNING_B1),
     (STATE_RUNNING_B1, EVENT_B1_LOW, STATE_RUNNING),
 )
 
@@ -68,6 +91,7 @@ class TrippyStrings(object):
         self.D = .05
         self.pid = None
         self.speed = 0
+        self.set_point = 0
 
         self.pi = pigpio.pi()  
         self.encoder_0 = decoder(self.pi, HALL_1_0, HALL_1_1, callback_0)
@@ -142,12 +166,19 @@ class TrippyStrings(object):
             speed = -speed
 
         if self.ser:
-            print(motor, speed)
             self.ser.write(bytes("%d%d\r\n" % (motor, speed), encoding="ascii"))
             
 
-    def event_action(self, new_state, event):
-        if new_state == STATE_RUNNING:
+    def event_action(self, old_state, new_state, event):
+        if old_state == STATE_RUNNING_B1 and event == EVENT_B1_LOW and new_state == STATE_RUNNING:
+            self.set_point += SET_POINT_ADJUST_INCREMENT
+            if self.pid:
+                self.pid.setpoint = self.set_point
+        elif old_state == STATE_RUNNING_B0 and event == EVENT_B0_LOW and new_state == STATE_RUNNING:
+            self.set_point -= SET_POINT_ADJUST_INCREMENT
+            if self.pid:
+                self.pid.setpoint = self.set_point
+        elif new_state == STATE_RUNNING:
             self.pos_0 = 0
             self.pos_1 = 0
             self.motor_speed(0, 64)
@@ -155,11 +186,13 @@ class TrippyStrings(object):
             self.pid = PID(self.P, self.I, self.D, setpoint=0)
             self.pid.sample_time = SAMPLE_TIME
             self.speed = 64
+            self.set_point = 0
 
         elif new_state == STATE_SETUP:
             self.motor_speed(0, 0)
             self.motor_speed(1, 0)
             self.speed = 0
+            self.pid = None
         elif new_state == STATE_SETUP_B0:
             self.motor_speed(0, 64)
         elif new_state == STATE_SETUP_B1:
@@ -169,10 +202,12 @@ class TrippyStrings(object):
     def handle_event(self, event):
         for row in transition_table:
             if row[0] == self.current_state and row[1] == event:
-                self.event_action(row[2], event)
+                #print("%s event %d -> state %d" % (self.current_state, event, row[2]))
+                self.event_action(self.current_state, row[2], event)
                 self.current_state = row[2]
-#        else:
-#            print("warning event not in transition table. current_state: %d event: %d" % (self.current_state, event))
+                break
+        else:
+            print("warning event not in transition table. current_state: %d event: %d" % (self.current_state, event))
                 
 
     def run(self):
@@ -212,6 +247,10 @@ class TrippyStrings(object):
                 self.motor_speed(0, mot_0)
                 self.motor_speed(1, mot_1)
 #                print("d: %d c: %.2f p: %d 0: %d 1: %d" % (diff, control, pwm_diff, mot_0, mot_1))
+
+                s = sin(time() / 4) * 800
+                print(int(s))
+                self.pid.setpoint = s
 
             sleep(SAMPLE_TIME)
             i += 1
