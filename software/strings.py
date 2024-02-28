@@ -1,76 +1,22 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 from math import sin
 from time import sleep, time
 from threading import Thread
 import pigpio
-import serial
 from encoder import decoder
 from simple_pid import PID
 
-BUTTON_0 = 17
-BUTTON_1 = 8
-HALL_1_0 = 27
-HALL_1_1 = 22
-HALL_2_0 = 23
-HALL_2_1 = 24
+HALL_1_0 = 17
+HALL_1_1 = 27
+HALL_2_0 = 24
+HALL_2_1 = 25
+MOTOR_1 = 12
+MOTOR_2 = 13
 
-DEVICE = "/dev/serial/by-id/usb-Arduino__www.arduino.cc__Arduino_Uno_64932343938351313012-if00"
 WINDOW_SIZE = 5
-DEBOUNCE_TIME = .01
 SAMPLE_TIME = .075
 SET_POINT_ADJUST_INCREMENT = 25
-
-STATE_SETUP = 1
-STATE_SETUP_B0 = 2
-STATE_SETUP_B1 = 3
-STATE_RUNNING = 4
-STATE_RUNNING_B0 = 5
-STATE_RUNNING_B1 = 6
-
-EVENT_B0_HI= 0
-EVENT_B0_LOW = 1
-EVENT_B1_HI= 2
-EVENT_B1_LOW = 3
-
-transition_table = (
-
-    # state 1
-    (STATE_SETUP, EVENT_B0_HI, STATE_SETUP_B0),  
-    (STATE_SETUP, EVENT_B1_HI, STATE_SETUP_B1),  
-    (STATE_SETUP, EVENT_B0_LOW, STATE_SETUP),
-    (STATE_SETUP, EVENT_B1_LOW, STATE_SETUP),
-
-    # state 2
-    (STATE_SETUP_B0, EVENT_B0_HI, STATE_SETUP_B0),
-    (STATE_SETUP_B0, EVENT_B1_HI, STATE_RUNNING),
-    (STATE_SETUP_B0, EVENT_B0_LOW, STATE_SETUP),
-    (STATE_SETUP_B0, EVENT_B1_LOW, STATE_SETUP_B0),
-
-    # state 3
-    (STATE_SETUP_B1, EVENT_B1_HI, STATE_SETUP_B1),
-    (STATE_SETUP_B1, EVENT_B0_HI, STATE_RUNNING),
-    (STATE_SETUP_B1, EVENT_B1_LOW, STATE_SETUP),
-    (STATE_SETUP_B1, EVENT_B0_LOW, STATE_SETUP_B1),
-
-    # state 4
-    (STATE_RUNNING, EVENT_B0_HI, STATE_RUNNING_B0),  
-    (STATE_RUNNING, EVENT_B1_HI, STATE_RUNNING_B1),  
-    (STATE_RUNNING, EVENT_B0_LOW, STATE_RUNNING),  
-    (STATE_RUNNING, EVENT_B1_LOW, STATE_RUNNING),  
-
-    # state 5
-    (STATE_RUNNING_B0, EVENT_B1_HI, STATE_SETUP),
-    (STATE_RUNNING_B0, EVENT_B0_HI, STATE_RUNNING_B0),
-    (STATE_RUNNING_B0, EVENT_B1_LOW, STATE_RUNNING_B0),
-    (STATE_RUNNING_B0, EVENT_B0_LOW, STATE_RUNNING),
-
-    # state 6
-    (STATE_RUNNING_B1, EVENT_B0_HI, STATE_SETUP),
-    (STATE_RUNNING_B1, EVENT_B1_HI, STATE_RUNNING_B1),
-    (STATE_RUNNING_B1, EVENT_B0_LOW, STATE_RUNNING_B1),
-    (STATE_RUNNING_B1, EVENT_B1_LOW, STATE_RUNNING),
-)
 
 ts = None
 def callback_0(way):
@@ -94,55 +40,21 @@ class TrippyStrings(object):
         self.set_point = 0
 
         self.pi = pigpio.pi()  
+        self.pi.set_mode(MOTOR_1, pigpio.OUTPUT)
+        self.pi.set_mode(MOTOR_2, pigpio.OUTPUT)
+        self.pi.set_PWM_frequency(MOTOR_1,800)
+        self.pi.set_PWM_frequency(MOTOR_2,800)
+        self.pi.set_PWM_range(MOTOR_1, 255)
+        self.pi.set_PWM_range(MOTOR_2, 255)
         self.encoder_0 = decoder(self.pi, HALL_1_0, HALL_1_1, callback_0)
         self.encoder_1 = decoder(self.pi, HALL_2_0, HALL_2_1, callback_1)
-        self.button_0_state = False
-        self.button_0_change = 0
-        self.button_1_state = False
-        self.button_1_change = 0
         self.pos_0 = 0
         self.pos_1 = 0
-        self.current_state = STATE_SETUP
 
 
     def setup(self):
         if not self.pi.connected:
            sys.exit(-1)
-
-        self.pi.callback(BUTTON_0, pigpio.EITHER_EDGE, pig_callback)
-        self.pi.callback(BUTTON_1, pigpio.EITHER_EDGE, pig_callback)
-
-        try:
-            self.ser = serial.Serial(DEVICE,
-                38400,
-                bytesize=serial.EIGHTBITS,
-                parity=serial.PARITY_NONE,
-                stopbits=serial.STOPBITS_ONE,
-                timeout=.01)
-        except serial.serialutil.SerialException as err:
-            print("Failed to open serial port %s" % device, str(err))
-            sys.exit(-1)
-
-        sleep(1)
-
-
-    def pig_callback(self, gpio, level, tick):
-        if gpio == BUTTON_0 and level:
-            self.button_0_change = time()
-            self.button_0_state = True
-
-        if gpio == BUTTON_0 and not level:
-            self.button_0_change = time()
-            self.button_0_state = False
-
-        if gpio == BUTTON_1 and level:
-            self.button_1_change = time()
-            self.button_1_state = True
-
-        if gpio == BUTTON_1 and not level:
-            self.button_1_change = time()
-            self.button_1_state = False
-
 
     def stop(self):
         self.motor_speed(0, 0)
@@ -161,54 +73,18 @@ class TrippyStrings(object):
         if motor != 0 and motor != 1 and (speed < -255 or speed > 255):
             return
 
-        # Take into account that one motor is upside down from the other
-        if motor == 1:
-            speed = -speed
-
-        if self.ser:
-            self.ser.write(bytes("%d%d\r\n" % (motor, speed), encoding="ascii"))
-            
-
-    def event_action(self, old_state, new_state, event):
-        if old_state == STATE_RUNNING_B1 and event == EVENT_B1_LOW and new_state == STATE_RUNNING:
-            self.set_point += SET_POINT_ADJUST_INCREMENT
-            if self.pid:
-                self.pid.setpoint = self.set_point
-        elif old_state == STATE_RUNNING_B0 and event == EVENT_B0_LOW and new_state == STATE_RUNNING:
-            self.set_point -= SET_POINT_ADJUST_INCREMENT
-            if self.pid:
-                self.pid.setpoint = self.set_point
-        elif new_state == STATE_RUNNING:
-            self.pos_0 = 0
-            self.pos_1 = 0
-            self.motor_speed(0, 64)
-            self.motor_speed(1, 64)
-            self.pid = PID(self.P, self.I, self.D, setpoint=0)
-            self.pid.sample_time = SAMPLE_TIME
-            self.speed = 64
-            self.set_point = 0
-
-        elif new_state == STATE_SETUP:
-            self.motor_speed(0, 0)
-            self.motor_speed(1, 0)
-            self.speed = 0
-            self.pid = None
-        elif new_state == STATE_SETUP_B0:
-            self.motor_speed(0, 64)
-        elif new_state == STATE_SETUP_B1:
-            self.motor_speed(1, 64)
+        pin = (MOTOR_1, MOTOR_2)[motor]
+        print("%d %d" % (pin, speed))
+        self.pi.set_PWM_dutycycle(pin, speed) 
 
 
-    def handle_event(self, event):
-        for row in transition_table:
-            if row[0] == self.current_state and row[1] == event:
-                #print("%s event %d -> state %d" % (self.current_state, event, row[2]))
-                self.event_action(self.current_state, row[2], event)
-                self.current_state = row[2]
-                break
-        else:
-            print("warning event not in transition table. current_state: %d event: %d" % (self.current_state, event))
-                
+    def test(self):
+
+        self.motor_speed(0, 250)
+        self.motor_speed(1, 240)
+        sleep(5)
+        self.motor_speed(0, 0)
+        self.motor_speed(1, 0)
 
     def run(self):
 
@@ -217,40 +93,18 @@ class TrippyStrings(object):
 
         print("controller ready for action.")
         while True:
-
-            if not self.button_0_state and self.button_0_change and (time() - self.button_0_change > DEBOUNCE_TIME):
-                self.handle_event(EVENT_B0_HI)
-                self.button_0_change = 0
-                self.button_0_state = 1
-
-            if not self.button_1_state and self.button_1_change and (time() - self.button_1_change > DEBOUNCE_TIME):
-                self.handle_event(EVENT_B1_HI)
-                self.button_1_change = 0
-                self.button_1_state = 1
-
-            if self.button_0_state and self.button_0_change and (time() - self.button_0_change > DEBOUNCE_TIME):
-                self.handle_event(EVENT_B0_LOW)
-                self.button_0_change = 0
-                self.button_0_state = 0
-
-            if self.button_1_state and self.button_1_change and (time() - self.button_1_change > DEBOUNCE_TIME):
-                self.handle_event(EVENT_B1_LOW)
-                self.button_1_change = 0
-                self.button_1_state = 0
-
-            if self.pid:
-                diff = self.pos_1 - self.pos_0
-                control = self.pid(self.pos_1 - self.pos_0)
-                pwm_diff = min(self.speed * 1.5, control)
-                mot_0 = int(self.speed - pwm_diff)
-                mot_1 = int(self.speed + pwm_diff)
-                self.motor_speed(0, mot_0)
-                self.motor_speed(1, mot_1)
+            diff = self.pos_1 - self.pos_0
+            control = self.pid(self.pos_1 - self.pos_0)
+            pwm_diff = min(self.speed * 1.5, control)
+            mot_0 = int(self.speed - pwm_diff)
+            mot_1 = int(self.speed + pwm_diff)
+            self.motor_speed(0, mot_0)
+            self.motor_speed(1, mot_1)
 #                print("d: %d c: %.2f p: %d 0: %d 1: %d" % (diff, control, pwm_diff, mot_0, mot_1))
 
-                s = sin(time() / 4) * 800
-                print(int(s))
-                self.pid.setpoint = s
+            s = sin(time() / 4) * 800
+            print(int(s))
+            self.pid.setpoint = s
 
             sleep(SAMPLE_TIME)
             i += 1
@@ -265,7 +119,8 @@ def main():
     ts = TrippyStrings()
     ts.setup()
     try:
-        ts.run()
+        ts.test()
+#        ts.run()
     except KeyboardInterrupt:
         ts.stop()
 
